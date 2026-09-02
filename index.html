@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Revenue Control Tower</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body { font-family: 'IBM Plex Sans', sans-serif; }
+  button:focus-visible { outline: 2px solid #24509A; outline-offset: 1px; }
+  button { font-family: inherit; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState } = React;
+
+/* ---------------------------------------------------------------------
+   TOKENS
+--------------------------------------------------------------------- */
+const C = {
+  ink: "#14181F", inkSoft: "#232936", paper: "#F6F6F3", panel: "#FFFFFF",
+  line: "#DEE1E3", lineSoft: "#E8EAEA", text: "#181C22",
+  slate: "#616B78", slateSoft: "#8A93A0",
+  blue: "#24509A", blueSoft: "#EBF1FA",
+  green: "#2E6E4E", greenSoft: "#E9F3EC",
+  amber: "#B4761F", amberSoft: "#FBF1E1",
+  red: "#A6382C", redSoft: "#FBEBE8",
+};
+
+const money = (n) => {
+  const sign = n < 0 ? "-" : "";
+  const abs = Math.abs(n);
+  return sign + "$" + abs.toLocaleString("en-US", { maximumFractionDigits: 0 });
+};
+const moneyShort = (n) => {
+  const sign = n < 0 ? "-" : "";
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000) return sign + "$" + (abs / 1_000_000).toFixed(2) + "M";
+  if (abs >= 1_000) return sign + "$" + (abs / 1_000).toFixed(0) + "K";
+  return sign + "$" + abs;
+};
+
+/* ---------------------------------------------------------------------
+   ICONS (inline SVG — no external icon library needed)
+--------------------------------------------------------------------- */
+function Icon({ children, size = 16, color = "currentColor", strokeWidth = 1.8, style }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color}
+      strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" style={style}>
+      {children}
+    </svg>
+  );
+}
+const GaugeIcon = (p) => <Icon {...p}><path d="M12 14 15.5 9.5" /><path d="M3.34 16a10 10 0 1 1 17.32 0" /></Icon>;
+const GitBranchIcon = (p) => <Icon {...p}><line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" /></Icon>;
+const AlertTriangleIcon = (p) => <Icon {...p}><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></Icon>;
+const FileSearchIcon = (p) => <Icon {...p}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h8" /><path d="M14 2v6h6" /><circle cx="16.5" cy="17.5" r="2.5" /><line x1="18.5" y1="19.5" x2="21" y2="22" /></Icon>;
+const ClipboardCheckIcon = (p) => <Icon {...p}><rect x="6" y="4" width="12" height="18" rx="2" /><path d="M9 4V2h6v2" /><path d="M9 12l2 2 4-4" /></Icon>;
+const ChevronRightIcon = (p) => <Icon {...p}><path d="M9 6l6 6-6 6" /></Icon>;
+const ArrowUpRightIcon = (p) => <Icon {...p}><line x1="7" y1="17" x2="17" y2="7" /><polyline points="7 7 17 7 17 17" /></Icon>;
+const ArrowDownRightIcon = (p) => <Icon {...p}><line x1="7" y1="7" x2="17" y2="17" /><polyline points="17 7 17 17 7 17" /></Icon>;
+const ClockIcon = (p) => <Icon {...p}><circle cx="12" cy="12" r="9" /><polyline points="12 7 12 12 15 14" /></Icon>;
+
+/* ---------------------------------------------------------------------
+   MOCK DATA
+--------------------------------------------------------------------- */
+const PERIOD = "August 2026";
+
+const overview = {
+  revenue: 4_820_000, invoiced: 4_648_000, adjustments: 65_000, openExceptions: 14,
+  revenuePrior: 4_610_000, invoicedPrior: 4_560_000, adjustmentsPrior: 41_000, exceptionsPrior: 9,
+};
+
+const bridgeRaw = [
+  { name: "Prior month", type: "total", value: 4_610_000 },
+  { name: "New business", type: "increase", value: 380_000 },
+  { name: "Credits", type: "decrease", value: -95_000 },
+  { name: "Timing", type: "decrease", value: -140_000 },
+  { name: "Adjustments", type: "increase", value: 65_000 },
+  { name: "Current month", type: "total", value: 4_820_000 },
+];
+
+const bridgeData = (() => {
+  let running = 0;
+  return bridgeRaw.map((row) => {
+    if (row.type === "total") { running = row.value; return { ...row, base: 0, display: row.value }; }
+    const start = running;
+    running = running + row.value;
+    const base = row.value >= 0 ? start : running;
+    return { ...row, base, display: Math.abs(row.value), signedValue: row.value };
+  });
+})();
+
+const transactions = {
+  "TXN-10432": {
+    id: "TXN-10432", customer: "Meridian Health Systems", amount: 84_200,
+    erpInvoice: { number: "INV-88214", system: "NetSuite", status: "Posted", date: "2026-08-04", amount: 61_000 },
+    contract: { number: "CN-3391", term: "24 mo", start: "2025-11-01", plan: "Enterprise Platform", billingFreq: "Monthly" },
+    revenueEvents: [
+      { date: "2026-08-01", type: "Recognition", amount: 61_000, note: "Standard monthly recognition" },
+      { date: "2026-08-18", type: "Recognition", amount: 23_200, note: "Usage overage, module: Analytics API" },
+    ],
+    adjustments: [],
+    lineage: [
+      { stage: "Contract", detail: "CN-3391 signed, ASC 606 schedule generated" },
+      { stage: "Usage feed", detail: "Analytics API usage ingested from metering pipeline" },
+      { stage: "Rev engine", detail: "Recognized $84,200 across 2 events" },
+      { stage: "ERP", detail: "Invoice INV-88214 posted for $61,000 only" },
+    ],
+    exceptionNote: "Recognized revenue of $84,200 exceeds the posted invoice of $61,000 by $23,200 — the usage overage was recognized but not yet billed.",
+  },
+  "TXN-10488": {
+    id: "TXN-10488", customer: "Northlake Freight Co.", amount: 19_500,
+    erpInvoice: { number: "—", system: "NetSuite", status: "Not found", date: "—", amount: 0 },
+    contract: { number: "CN-3450", term: "12 mo", start: "2026-03-15", plan: "Growth", billingFreq: "Quarterly" },
+    revenueEvents: [
+      { date: "2026-08-06", type: "Recognition", amount: 19_500, note: "Quarterly recognition, product code PRD-77 unmapped" },
+    ],
+    adjustments: [],
+    lineage: [
+      { stage: "Contract", detail: "CN-3450 signed, product code PRD-77" },
+      { stage: "Rev engine", detail: "Recognized $19,500, could not map PRD-77 to GL revenue account" },
+      { stage: "ERP", detail: "No invoice reference — mapping table has no entry for PRD-77" },
+    ],
+    exceptionNote: "Product code PRD-77 has no entry in the revenue account mapping table, so this transaction cannot be traced to a GL account or an ERP invoice.",
+  },
+  "TXN-10501": {
+    id: "TXN-10501", customer: "Arden & Cole LLP", amount: 41_000,
+    erpInvoice: { number: "INV-88301", system: "NetSuite", status: "Posted", date: "2026-08-11", amount: 41_000 },
+    contract: { number: "CN-2287", term: "36 mo", start: "2024-06-01", plan: "Enterprise Platform", billingFreq: "Monthly" },
+    revenueEvents: [
+      { date: "2026-08-11", type: "Recognition", amount: 41_000, note: "Standard monthly recognition" },
+      { date: "2026-08-11", type: "Recognition", amount: 41_000, note: "Duplicate batch run, job ID BR-2208-2" },
+    ],
+    adjustments: [],
+    lineage: [
+      { stage: "Contract", detail: "CN-2287, monthly recognition schedule" },
+      { stage: "Rev engine", detail: "Batch job BR-2208-1 recognized $41,000" },
+      { stage: "Rev engine", detail: "Batch job BR-2208-2 re-ran the same period and recognized $41,000 again" },
+      { stage: "ERP", detail: "Invoice INV-88301 posted once for $41,000 — revenue side is doubled" },
+    ],
+    exceptionNote: "Two recognition batch runs (BR-2208-1 and BR-2208-2) posted the same $41,000 for the same period, doubling recognized revenue against a single invoice.",
+  },
+  "TXN-10517": {
+    id: "TXN-10517", customer: "Solvent Bay Retail", amount: 12_800,
+    erpInvoice: { number: "INV-88350", system: "NetSuite", status: "Posted", date: "2026-08-14", amount: 12_800 },
+    contract: { number: "CN-3102", term: "12 mo", start: "2025-09-01", plan: "Growth", billingFreq: "Monthly" },
+    revenueEvents: [
+      { date: "2026-08-14", type: "Recognition", amount: 15_600, note: "Standard monthly recognition" },
+      { date: "2026-08-15", type: "Manual override", amount: -2_800, note: "Analyst override — churned seat count corrected" },
+    ],
+    adjustments: [
+      { date: "2026-08-15", amount: -2_800, reason: "Seat count correction", approver: "J. Ferro", status: "Approved" },
+    ],
+    lineage: [
+      { stage: "Contract", detail: "CN-3102, seat-based pricing" },
+      { stage: "Rev engine", detail: "Recognized $15,600 using prior seat count" },
+      { stage: "Manual override", detail: "R. Osei overrode recognized amount by -$2,800 to reflect 4 churned seats" },
+      { stage: "ERP", detail: "Invoice INV-88350 posted for $12,800, matching the override" },
+    ],
+    exceptionNote: "An analyst manually overrode the system-recognized amount by -$2,800. Overrides bypass the automated engine and require review even when the ending balance reconciles.",
+  },
+};
+
+const exceptions = [
+  { id: "EX-2201", type: "Revenue > invoice", txn: "TXN-10432", severity: "high", opened: "2026-08-18" },
+  { id: "EX-2214", type: "Revenue > invoice", txn: "TXN-10432", severity: "high", opened: "2026-08-18" },
+  { id: "EX-2188", type: "Missing mapping", txn: "TXN-10488", severity: "high", opened: "2026-08-06" },
+  { id: "EX-2190", type: "Missing mapping", txn: "TXN-10488", severity: "medium", opened: "2026-08-07" },
+  { id: "EX-2192", type: "Missing mapping", txn: "TXN-10488", severity: "medium", opened: "2026-08-09" },
+  { id: "EX-2199", type: "Missing mapping", txn: "TXN-10488", severity: "low", opened: "2026-08-12" },
+  { id: "EX-2205", type: "Missing mapping", txn: "TXN-10488", severity: "low", opened: "2026-08-13" },
+  { id: "EX-2230", type: "Duplicate transaction", txn: "TXN-10501", severity: "high", opened: "2026-08-11" },
+  { id: "EX-2231", type: "Duplicate transaction", txn: "TXN-10501", severity: "high", opened: "2026-08-11" },
+  { id: "EX-2240", type: "Manual override", txn: "TXN-10517", severity: "medium", opened: "2026-08-15" },
+  { id: "EX-2241", type: "Manual override", txn: "TXN-10517", severity: "low", opened: "2026-08-15" },
+  { id: "EX-2242", type: "Manual override", txn: "TXN-10517", severity: "low", opened: "2026-08-16" },
+  { id: "EX-2250", type: "Revenue > invoice", txn: "TXN-10432", severity: "medium", opened: "2026-08-19" },
+  { id: "EX-2251", type: "Revenue > invoice", txn: "TXN-10432", severity: "low", opened: "2026-08-19" },
+];
+
+const exceptionCategories = ["Missing mapping", "Revenue > invoice", "Duplicate transaction", "Manual override"];
+
+const initialAdjustments = [
+  {
+    id: "ADJ-441", txn: "TXN-10432",
+    proposedChange: "Reclass $23,200 of recognized usage revenue to deferred revenue until invoiced",
+    financialImpact: -23_200,
+    reason: "Revenue was recognized for an Analytics API usage overage ahead of billing. Deferring it until the invoice is issued keeps recognized revenue aligned to invoiced amounts for this contract.",
+    approver: "D. Whitfield", status: "Pending", submittedBy: "A. Reyes", submittedOn: "2026-08-20",
+    audit: [
+      { ts: "2026-08-20 09:14", actor: "A. Reyes", action: "Adjustment drafted from exception EX-2201" },
+      { ts: "2026-08-20 09:20", actor: "A. Reyes", action: "Submitted for approval" },
+    ],
+  },
+  {
+    id: "ADJ-437", txn: "TXN-10501",
+    proposedChange: "Reverse duplicate $41,000 recognition from batch job BR-2208-2",
+    financialImpact: -41_000,
+    reason: "Batch job BR-2208-2 re-ran a period already closed by BR-2208-1, doubling recognized revenue against a single $41,000 invoice.",
+    approver: "D. Whitfield", status: "Approved", submittedBy: "M. Tran", submittedOn: "2026-08-12",
+    audit: [
+      { ts: "2026-08-12 11:02", actor: "M. Tran", action: "Adjustment drafted from exception EX-2230" },
+      { ts: "2026-08-12 11:10", actor: "M. Tran", action: "Submitted for approval" },
+      { ts: "2026-08-13 08:44", actor: "D. Whitfield", action: "Approved — root cause confirmed as duplicate batch run" },
+      { ts: "2026-08-13 08:45", actor: "System", action: "Reversal posted to revenue ledger" },
+    ],
+  },
+  {
+    id: "ADJ-429", txn: "TXN-10517",
+    proposedChange: "Confirm -$2,800 manual override for churned seat correction",
+    financialImpact: -2_800,
+    reason: "Seat count was corrected mid-cycle after 4 seats churned. Override brings recognized revenue in line with the reduced invoice.",
+    approver: "J. Ferro", status: "Approved", submittedBy: "R. Osei", submittedOn: "2026-08-15",
+    audit: [
+      { ts: "2026-08-15 14:02", actor: "R. Osei", action: "Manual override applied directly in revenue engine" },
+      { ts: "2026-08-15 14:05", actor: "R. Osei", action: "Adjustment record opened for review" },
+      { ts: "2026-08-15 16:30", actor: "J. Ferro", action: "Approved — matches signed amendment on file" },
+    ],
+  },
+];
+
+/* ---------------------------------------------------------------------
+   PRIMITIVES
+--------------------------------------------------------------------- */
+function StatusDot({ tone }) {
+  const color = { high: C.red, medium: C.amber, low: C.slateSoft, good: C.green }[tone] || C.slateSoft;
+  return <span style={{ width: 7, height: 7, borderRadius: "50%", background: color, display: "inline-block", flexShrink: 0 }} />;
+}
+
+function Delta({ value }) {
+  const positive = value > 0;
+  const Ic = value === 0 ? null : positive ? ArrowUpRightIcon : ArrowDownRightIcon;
+  const color = value === 0 ? C.slateSoft : positive ? C.green : C.red;
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 2, color, fontSize: 12.5, fontWeight: 500 }}>
+      {Ic && <Ic size={13} strokeWidth={2.4} />}
+      {moneyShort(Math.abs(value))}
+    </span>
+  );
+}
+
+function Panel({ title, eyebrow, right, children, style }) {
+  return (
+    <div style={{ background: C.panel, border: `1px solid ${C.line}`, ...style }}>
+      {(title || right) && (
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", padding: "14px 18px", borderBottom: `1px solid ${C.lineSoft}` }}>
+          <div>
+            {eyebrow && <div style={{ fontSize: 11, color: C.slateSoft, marginBottom: 2, fontWeight: 500 }}>{eyebrow}</div>}
+            {title && <h3 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 15.5, fontWeight: 600, margin: 0, color: C.text }}>{title}</h3>}
+          </div>
+          {right}
+        </div>
+      )}
+      <div>{children}</div>
+    </div>
+  );
+}
+
+function Pill({ children, tone = "slate" }) {
+  const map = {
+    slate: { bg: C.lineSoft, fg: C.slate }, blue: { bg: C.blueSoft, fg: C.blue },
+    green: { bg: C.greenSoft, fg: C.green }, amber: { bg: C.amberSoft, fg: C.amber }, red: { bg: C.redSoft, fg: C.red },
+  }[tone];
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", padding: "3px 8px", borderRadius: 3, background: map.bg, color: map.fg, fontSize: 12, fontWeight: 600, whiteSpace: "nowrap" }}>
+      {children}
+    </span>
+  );
+}
+
+function btnStyle(tone) {
+  const base = { border: "none", padding: "9px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer", borderRadius: 3, fontFamily: "'IBM Plex Sans', sans-serif" };
+  if (tone === "blue") return { ...base, background: C.blue, color: "#fff" };
+  if (tone === "outline") return { ...base, background: "transparent", color: C.text, border: `1px solid ${C.line}` };
+  if (tone === "green") return { ...base, background: C.green, color: "#fff" };
+  if (tone === "text") return { background: "transparent", color: C.blue, border: "none", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'IBM Plex Sans', sans-serif", display: "inline-flex", alignItems: "center", gap: 2 };
+  return {};
+}
+
+const thStyle = { padding: "10px 18px", borderBottom: `1px solid ${C.lineSoft}` };
+const tdStyle = { padding: "11px 18px", color: C.text };
+
+function DetailRow({ label, value, mono, last }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: last ? "none" : `1px solid ${C.lineSoft}` }}>
+      <span style={{ fontSize: 12.5, color: C.slate }}>{label}</span>
+      <span style={{ fontSize: 13, fontWeight: 500, fontFamily: mono ? "'IBM Plex Mono', monospace" : "inherit" }}>{value}</span>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------
+   NAVIGATION RAIL
+--------------------------------------------------------------------- */
+const MODULES = [
+  { id: "overview", label: "Overview", Icon: GaugeIcon },
+  { id: "bridge", label: "Revenue bridge", Icon: GitBranchIcon },
+  { id: "exceptions", label: "Exceptions", Icon: AlertTriangleIcon },
+  { id: "detail", label: "Transaction detail", Icon: FileSearchIcon },
+  { id: "workflow", label: "Adjustment workflow", Icon: ClipboardCheckIcon },
+];
+
+function Rail({ active, onSelect, exceptionCount, pendingCount }) {
+  return (
+    <div style={{ width: 216, flexShrink: 0, background: C.ink, color: "#fff", display: "flex", flexDirection: "column", minHeight: "100vh" }}>
+      <div style={{ padding: "22px 20px 18px", borderBottom: `1px solid ${C.inkSoft}` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+          <div style={{ width: 26, height: 26, border: "1.5px solid #fff", borderRadius: 2, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <div style={{ width: 8, height: 8, borderRadius: "50%", background: C.amber }} />
+          </div>
+          <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 600, fontSize: 15.5, letterSpacing: 0.2 }}>Revenue Control Tower</div>
+        </div>
+        <div style={{ fontSize: 12, color: "#8891A0", marginTop: 10 }}>Reporting period</div>
+        <div style={{ fontSize: 13.5, fontWeight: 500, marginTop: 1 }}>{PERIOD}</div>
+      </div>
+      <div style={{ padding: "10px 10px", flex: 1 }}>
+        {MODULES.map((m) => {
+          const isActive = active === m.id;
+          const badge = m.id === "exceptions" ? exceptionCount : m.id === "workflow" ? pendingCount : null;
+          return (
+            <button key={m.id} onClick={() => onSelect(m.id)} style={{
+              width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", marginBottom: 2,
+              border: "none", cursor: "pointer", background: isActive ? "rgba(255,255,255,0.08)" : "transparent",
+              borderLeft: isActive ? `2px solid ${C.amber}` : "2px solid transparent",
+              color: isActive ? "#fff" : "#AEB6C2", fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 13.5, fontWeight: 500, textAlign: "left",
+            }}>
+              <m.Icon size={16} strokeWidth={1.8} style={{ flexShrink: 0 }} />
+              <span style={{ flex: 1 }}>{m.label}</span>
+              {badge ? <span style={{ fontSize: 11, fontWeight: 600, color: isActive ? "#fff" : "#C9CFD8", background: "rgba(255,255,255,0.12)", padding: "1px 6px", borderRadius: 8 }}>{badge}</span> : null}
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ padding: "16px 20px", borderTop: `1px solid ${C.inkSoft}`, fontSize: 11.5, color: "#6E7889" }}>
+        Source systems<br /><span style={{ color: "#AEB6C2" }}>NetSuite · Salesforce CPQ · Metering</span>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------
+   OVERVIEW
+--------------------------------------------------------------------- */
+function Overview({ goTo }) {
+  const kpis = [
+    { label: "Revenue", value: overview.revenue, prior: overview.revenuePrior },
+    { label: "Invoiced", value: overview.invoiced, prior: overview.invoicedPrior },
+    { label: "Adjustments", value: overview.adjustments, prior: overview.adjustmentsPrior },
+    { label: "Open exceptions", value: overview.openExceptions, prior: overview.exceptionsPrior, isCount: true },
+  ];
+  const gap = overview.revenue - overview.invoiced;
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 1, background: C.line, border: `1px solid ${C.line}` }}>
+        {kpis.map((k) => (
+          <div key={k.label} style={{ background: C.panel, padding: "20px 22px" }}>
+            <div style={{ fontSize: 12.5, color: C.slate, fontWeight: 500, marginBottom: 10 }}>{k.label}</div>
+            <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 26, fontWeight: 500, color: C.text, fontVariantNumeric: "tabular-nums" }}>
+              {k.isCount ? k.value : money(k.value)}
+            </div>
+            <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 6 }}>
+              <Delta value={k.value - k.prior} />
+              <span style={{ fontSize: 12, color: C.slateSoft }}>vs. July</span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16, marginTop: 16 }}>
+        <Panel title="Revenue-to-invoice gap" eyebrow="Reconciliation">
+          <div style={{ padding: "20px 22px" }}>
+            <p style={{ margin: 0, fontSize: 14, color: C.slate, lineHeight: 1.55, maxWidth: 520 }}>
+              Recognized revenue is running <strong style={{ color: C.text }}>{money(gap)}</strong> ahead of invoiced amounts
+              this period, driven mainly by usage recognized before billing and one duplicate posting still under review.
+            </p>
+            <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+              <button onClick={() => goTo("bridge")} style={btnStyle("blue")}>View revenue bridge</button>
+              <button onClick={() => goTo("exceptions")} style={btnStyle("outline")}>Review exceptions</button>
+            </div>
+          </div>
+        </Panel>
+        <Panel title="Exceptions by category" eyebrow="Open items">
+          <div style={{ padding: "16px 22px 18px" }}>
+            {exceptionCategories.map((cat) => {
+              const count = exceptions.filter((e) => e.type === cat).length;
+              const width = (count / exceptions.length) * 100;
+              return (
+                <div key={cat} style={{ marginBottom: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 4 }}>
+                    <span style={{ color: C.text, fontWeight: 500 }}>{cat}</span>
+                    <span style={{ color: C.slateSoft, fontFamily: "'IBM Plex Mono', monospace" }}>{count}</span>
+                  </div>
+                  <div style={{ height: 5, background: C.lineSoft, borderRadius: 2 }}>
+                    <div style={{ height: 5, width: `${width}%`, background: C.amber, borderRadius: 2 }} />
+                  </div>
+                </div>
+              );
+            })}
+            <button onClick={() => goTo("exceptions")} style={{ ...btnStyle("text"), marginTop: 4, padding: 0 }}>
+              Open exception queue <ChevronRightIcon size={13} style={{ verticalAlign: "-2px" }} />
+            </button>
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------
+   REVENUE BRIDGE (custom SVG waterfall — no chart library)
+--------------------------------------------------------------------- */
+function colorForBridge(type) {
+  if (type === "total") return C.ink;
+  if (type === "increase") return C.green;
+  return C.red;
+}
+
+function WaterfallChart() {
+  const width = 800, height = 320;
+  const padLeft = 64, padRight = 16, padTop = 34, padBottom = 34;
+  const chartW = width - padLeft - padRight, chartH = height - padTop - padBottom;
+  const yMin = 4_400_000, yMax = 5_000_000;
+  const scaleY = (v) => padTop + ((yMax - v) / (yMax - yMin)) * chartH;
+  const n = bridgeData.length;
+  const barGap = 0.32;
+  const barSlot = chartW / n;
+  const barW = barSlot * (1 - barGap);
+
+  const ticks = [4_400_000, 4_600_000, 4_800_000, 5_000_000];
+
+  return (
+    <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Revenue bridge waterfall chart">
+      {ticks.map((t) => (
+        <g key={t}>
+          <line x1={padLeft} x2={width - padRight} y1={scaleY(t)} y2={scaleY(t)} stroke={C.lineSoft} strokeWidth="1" />
+          <text x={padLeft - 10} y={scaleY(t) + 4} textAnchor="end" fontSize="11.5" fontFamily="IBM Plex Mono" fill={C.slateSoft}>
+            {moneyShort(t)}
+          </text>
+        </g>
+      ))}
+      <line x1={padLeft} x2={width - padRight} y1={padTop + chartH} y2={padTop + chartH} stroke={C.line} strokeWidth="1" />
+
+      {bridgeData.map((row, i) => {
+        const slotX = padLeft + i * barSlot + (barSlot - barW) / 2;
+        let topY, bottomY;
+        if (row.type === "total") {
+          topY = scaleY(row.value);
+          bottomY = padTop + chartH;
+        } else {
+          topY = scaleY(row.base + row.display);
+          bottomY = scaleY(row.base);
+        }
+        const barH = Math.max(bottomY - topY, 1);
+        const label = row.type === "total" ? money(row.value) : (row.signedValue > 0 ? "+" : "") + moneyShort(row.signedValue);
+        return (
+          <g key={row.name}>
+            <rect x={slotX} y={topY} width={barW} height={barH} fill={colorForBridge(row.type)} rx="1" />
+            <text x={slotX + barW / 2} y={topY - 9} textAnchor="middle" fontSize="12" fontFamily="IBM Plex Mono" fontWeight="500" fill={C.text}>
+              {label}
+            </text>
+            <text x={slotX + barW / 2} y={padTop + chartH + 20} textAnchor="middle" fontSize="12" fontFamily="IBM Plex Sans" fill={C.slate}>
+              {row.name}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function RevenueBridge({ goTo }) {
+  return (
+    <div>
+      <Panel title="Prior month to current month" eyebrow="Revenue bridge">
+        <div style={{ padding: "20px 22px 6px" }}>
+          <WaterfallChart />
+        </div>
+        <div style={{ display: "flex", gap: 18, padding: "6px 22px 18px", fontSize: 12, color: C.slate }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 6 }}><StatusDot tone="good" /> Increase</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 6 }}><StatusDot tone="high" /> Decrease</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 6 }}><span style={{ width: 7, height: 7, background: C.ink, display: "inline-block" }} /> Period total</span>
+        </div>
+      </Panel>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 1, background: C.line, border: `1px solid ${C.line}`, marginTop: 16 }}>
+        {bridgeRaw.slice(1, 5).map((row) => (
+          <div key={row.name} style={{ background: C.panel, padding: "16px 18px" }}>
+            <div style={{ fontSize: 12, color: C.slate, marginBottom: 8 }}>{row.name}</div>
+            <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 18, fontWeight: 500, color: row.value >= 0 ? C.green : C.red }}>
+              {row.value > 0 ? "+" : ""}{money(row.value)}
+            </div>
+          </div>
+        ))}
+        <button onClick={() => goTo("exceptions")} style={{ background: C.ink, border: "none", cursor: "pointer", color: "#fff", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "flex-start", padding: "16px 18px", gap: 4 }}>
+          <span style={{ fontSize: 12, color: "#AEB6C2" }}>14 open exceptions</span>
+          <span style={{ fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 3 }}>Explain the gap <ChevronRightIcon size={13} /></span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------
+   EXCEPTIONS
+--------------------------------------------------------------------- */
+function Exceptions({ openTxn }) {
+  const [filter, setFilter] = useState("All");
+  const filtered = filter === "All" ? exceptions : exceptions.filter((e) => e.type === filter);
+  return (
+    <Panel title="Open exceptions" eyebrow={`${filtered.length} of ${exceptions.length} shown`} right={
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {["All", ...exceptionCategories].map((cat) => (
+          <button key={cat} onClick={() => setFilter(cat)} style={{
+            border: `1px solid ${filter === cat ? C.blue : C.line}`, background: filter === cat ? C.blueSoft : "transparent",
+            color: filter === cat ? C.blue : C.slate, fontSize: 12, fontWeight: 500, padding: "5px 10px", borderRadius: 3, cursor: "pointer",
+          }}>{cat}</button>
+        ))}
+      </div>
+    }>
+      <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 720 }}>
+        <thead>
+          <tr style={{ textAlign: "left", color: C.slateSoft, fontSize: 11.5, fontWeight: 500 }}>
+            <th style={thStyle}>ID</th><th style={thStyle}>Category</th><th style={thStyle}>Transaction</th>
+            <th style={thStyle}>Customer</th><th style={{ ...thStyle, textAlign: "right" }}>Amount</th>
+            <th style={thStyle}>Opened</th><th style={thStyle}>Severity</th><th style={thStyle}></th>
+          </tr>
+        </thead>
+        <tbody>
+          {filtered.map((e) => {
+            const t = transactions[e.txn];
+            return (
+              <tr key={e.id} style={{ borderTop: `1px solid ${C.lineSoft}` }}>
+                <td style={{ ...tdStyle, fontFamily: "'IBM Plex Mono', monospace", color: C.slateSoft }}>{e.id}</td>
+                <td style={tdStyle}>{e.type}</td>
+                <td style={{ ...tdStyle, fontFamily: "'IBM Plex Mono', monospace" }}>{e.txn}</td>
+                <td style={tdStyle}>{t.customer}</td>
+                <td style={{ ...tdStyle, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace" }}>{money(t.amount)}</td>
+                <td style={{ ...tdStyle, color: C.slate }}>{e.opened}</td>
+                <td style={tdStyle}><span style={{ display: "flex", alignItems: "center", gap: 6 }}><StatusDot tone={e.severity} /> {e.severity}</span></td>
+                <td style={{ ...tdStyle, textAlign: "right" }}>
+                  <button onClick={() => openTxn(e.txn)} style={{ ...btnStyle("text"), fontSize: 12.5 }}>Investigate <ChevronRightIcon size={12} style={{ verticalAlign: "-1px" }} /></button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      </div>
+    </Panel>
+  );
+}
+
+/* ---------------------------------------------------------------------
+   TRANSACTION DETAIL
+--------------------------------------------------------------------- */
+function TransactionDetail({ txnId, setTxnId, proposeAdjustment }) {
+  const t = transactions[txnId];
+  const relatedExceptions = exceptions.filter((e) => e.txn === txnId);
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        {Object.keys(transactions).map((id) => (
+          <button key={id} onClick={() => setTxnId(id)} style={{
+            fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5, padding: "6px 11px", borderRadius: 3,
+            border: `1px solid ${id === txnId ? C.blue : C.line}`, background: id === txnId ? C.blueSoft : C.panel,
+            color: id === txnId ? C.blue : C.slate, cursor: "pointer",
+          }}>{id}</button>
+        ))}
+      </div>
+      <Panel eyebrow={t.id} title={t.customer} right={<button onClick={() => proposeAdjustment(t.id)} style={btnStyle("blue")}>Propose adjustment</button>}>
+        <div style={{ padding: "18px 22px", borderBottom: `1px solid ${C.lineSoft}`, display: "flex", gap: 28 }}>
+          <div><div style={{ fontSize: 12, color: C.slate }}>Recognized revenue</div><div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 20, fontWeight: 500, marginTop: 2 }}>{money(t.amount)}</div></div>
+          <div><div style={{ fontSize: 12, color: C.slate }}>Open exceptions</div><div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 20, fontWeight: 500, marginTop: 2 }}>{relatedExceptions.length}</div></div>
+        </div>
+        <div style={{ padding: "16px 22px", background: C.amberSoft, borderBottom: `1px solid ${C.lineSoft}`, display: "flex", gap: 10 }}>
+          <AlertTriangleIcon size={16} color={C.amber} style={{ flexShrink: 0, marginTop: 1 }} />
+          <p style={{ margin: 0, fontSize: 13, color: "#5F4517", lineHeight: 1.5 }}>{t.exceptionNote}</p>
+        </div>
+      </Panel>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
+        <Panel title="ERP invoice" eyebrow={t.erpInvoice.system}>
+          <div style={{ padding: "16px 22px" }}>
+            <DetailRow label="Invoice number" value={t.erpInvoice.number} mono />
+            <DetailRow label="Status" value={<Pill tone={t.erpInvoice.status === "Posted" ? "green" : "red"}>{t.erpInvoice.status}</Pill>} />
+            <DetailRow label="Date" value={t.erpInvoice.date} />
+            <DetailRow label="Invoiced amount" value={money(t.erpInvoice.amount)} mono last />
+          </div>
+        </Panel>
+        <Panel title="Contract" eyebrow="Salesforce CPQ">
+          <div style={{ padding: "16px 22px" }}>
+            <DetailRow label="Contract number" value={t.contract.number} mono />
+            <DetailRow label="Plan" value={t.contract.plan} />
+            <DetailRow label="Term" value={t.contract.term} />
+            <DetailRow label="Billing frequency" value={t.contract.billingFreq} last />
+          </div>
+        </Panel>
+        <Panel title="Revenue events" eyebrow={`${t.revenueEvents.length} events`}>
+          <div>
+            {t.revenueEvents.map((ev, i) => (
+              <div key={i} style={{ padding: "12px 22px", borderTop: i ? `1px solid ${C.lineSoft}` : "none", display: "flex", justifyContent: "space-between", gap: 10 }}>
+                <div><div style={{ fontSize: 13, fontWeight: 500 }}>{ev.type}</div><div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>{ev.note}</div><div style={{ fontSize: 11.5, color: C.slateSoft, marginTop: 3 }}>{ev.date}</div></div>
+                <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13.5, fontWeight: 500, whiteSpace: "nowrap" }}>{money(ev.amount)}</div>
+              </div>
+            ))}
+          </div>
+        </Panel>
+        <Panel title="Adjustments" eyebrow={`${t.adjustments.length} recorded`}>
+          <div>
+            {t.adjustments.length === 0 && <div style={{ padding: "18px 22px", fontSize: 13, color: C.slateSoft }}>No adjustments recorded for this transaction yet.</div>}
+            {t.adjustments.map((a, i) => (
+              <div key={i} style={{ padding: "12px 22px", borderTop: i ? `1px solid ${C.lineSoft}` : "none", display: "flex", justifyContent: "space-between", gap: 10 }}>
+                <div><div style={{ fontSize: 13, fontWeight: 500 }}>{a.reason}</div><div style={{ fontSize: 11.5, color: C.slateSoft, marginTop: 3 }}>{a.date} · approved by {a.approver}</div></div>
+                <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13.5, fontWeight: 500, color: a.amount < 0 ? C.red : C.green }}>{a.amount > 0 ? "+" : ""}{money(a.amount)}</div>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      </div>
+      <Panel title="Lineage" eyebrow="Source-to-ledger trace" style={{ marginTop: 16 }}>
+        <div style={{ padding: "18px 22px", display: "flex", flexWrap: "wrap", gap: 0 }}>
+          {t.lineage.map((step, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "flex-start" }}>
+              <div style={{ minWidth: 200, maxWidth: 220, paddingRight: 16 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: C.blue, flexShrink: 0 }} />
+                  <span style={{ fontSize: 12.5, fontWeight: 600 }}>{step.stage}</span>
+                </div>
+                <p style={{ fontSize: 12, color: C.slate, lineHeight: 1.5, margin: "0 0 0 16px" }}>{step.detail}</p>
+              </div>
+              {i < t.lineage.length - 1 && <div style={{ width: 32, paddingTop: 3, flexShrink: 0 }}><div style={{ height: 1, background: C.line, marginTop: 3 }} /></div>}
+            </div>
+          ))}
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------
+   ADJUSTMENT WORKFLOW
+--------------------------------------------------------------------- */
+function AdjustmentWorkflow({ adjustments, setAdjustments, focusId, setFocusId }) {
+  const active = adjustments.find((a) => a.id === focusId) || adjustments[0];
+  const act = (action) => {
+    setAdjustments((prev) => prev.map((a) => {
+      if (a.id !== active.id) return a;
+      const now = "2026-08-21 " + new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+      if (action === "approve") return { ...a, status: "Approved", audit: [...a.audit, { ts: now, actor: a.approver, action: "Approved — adjustment posted to revenue ledger" }] };
+      return { ...a, status: "Rejected", audit: [...a.audit, { ts: now, actor: a.approver, action: "Rejected — returned to submitter for revision" }] };
+    }));
+  };
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 16 }}>
+      <Panel title="Queue" eyebrow={`${adjustments.length} adjustments`}>
+        <div>
+          {adjustments.map((a) => (
+            <button key={a.id} onClick={() => setFocusId(a.id)} style={{
+              display: "block", width: "100%", textAlign: "left", padding: "12px 18px", cursor: "pointer",
+              border: "none", borderBottom: `1px solid ${C.lineSoft}`, background: a.id === active.id ? C.blueSoft : "transparent",
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: C.slateSoft }}>{a.id}</span>
+                <Pill tone={a.status === "Approved" ? "green" : a.status === "Rejected" ? "red" : "amber"}>{a.status}</Pill>
+              </div>
+              <div style={{ fontSize: 12.5, fontWeight: 500, color: C.text, lineHeight: 1.4 }}>{a.proposedChange}</div>
+              <div style={{ fontSize: 11.5, color: C.slateSoft, marginTop: 4, fontFamily: "'IBM Plex Mono', monospace" }}>{a.txn}</div>
+            </button>
+          ))}
+        </div>
+      </Panel>
+      <div>
+        <Panel eyebrow={active.id} title="Proposed change" right={<Pill tone={active.status === "Approved" ? "green" : active.status === "Rejected" ? "red" : "amber"}>{active.status}</Pill>}>
+          <div style={{ padding: "18px 22px" }}>
+            <p style={{ margin: 0, fontSize: 14.5, lineHeight: 1.5, color: C.text }}>{active.proposedChange}</p>
+            <div style={{ display: "flex", gap: 28, marginTop: 16, flexWrap: "wrap" }}>
+              <div><div style={{ fontSize: 12, color: C.slate }}>Financial impact</div><div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 20, fontWeight: 500, marginTop: 2, color: active.financialImpact < 0 ? C.red : C.green }}>{active.financialImpact > 0 ? "+" : ""}{money(active.financialImpact)}</div></div>
+              <div><div style={{ fontSize: 12, color: C.slate }}>Transaction</div><div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 15, marginTop: 4 }}>{active.txn}</div></div>
+              <div><div style={{ fontSize: 12, color: C.slate }}>Submitted by</div><div style={{ fontSize: 14, marginTop: 4 }}>{active.submittedBy} · {active.submittedOn}</div></div>
+            </div>
+          </div>
+        </Panel>
+        <Panel title="Reason" style={{ marginTop: 16 }}>
+          <div style={{ padding: "16px 22px" }}><p style={{ margin: 0, fontSize: 13.5, color: C.slate, lineHeight: 1.6 }}>{active.reason}</p></div>
+        </Panel>
+        <Panel title="Approver" style={{ marginTop: 16 }} right={active.status === "Pending" && (
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => act("reject")} style={btnStyle("outline")}>Reject</button>
+            <button onClick={() => act("approve")} style={btnStyle("green")}>Approve</button>
+          </div>
+        )}>
+          <div style={{ padding: "16px 22px", display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 32, height: 32, borderRadius: "50%", background: C.ink, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 600, fontFamily: "'Space Grotesk', sans-serif" }}>
+              {active.approver.split(" ").map((s) => s[0]).join("")}
+            </div>
+            <div><div style={{ fontSize: 13.5, fontWeight: 500 }}>{active.approver}</div><div style={{ fontSize: 12, color: C.slateSoft }}>Revenue controller</div></div>
+          </div>
+        </Panel>
+        <Panel title="Audit trail" eyebrow={`${active.audit.length} events`} style={{ marginTop: 16 }}>
+          <div style={{ padding: "16px 22px" }}>
+            {active.audit.map((entry, i) => (
+              <div key={i} style={{ display: "flex", gap: 12, paddingBottom: i < active.audit.length - 1 ? 14 : 0 }}>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 3 }}>
+                  <div style={{ width: 7, height: 7, borderRadius: "50%", background: C.blue, flexShrink: 0 }} />
+                  {i < active.audit.length - 1 && <div style={{ width: 1, flex: 1, background: C.line, marginTop: 2 }} />}
+                </div>
+                <div style={{ paddingBottom: 2 }}>
+                  <div style={{ fontSize: 11.5, color: C.slateSoft, fontFamily: "'IBM Plex Mono', monospace" }}>{entry.ts}</div>
+                  <div style={{ fontSize: 13, marginTop: 2 }}><strong style={{ fontWeight: 600 }}>{entry.actor}</strong> — {entry.action}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------
+   ROOT APP
+--------------------------------------------------------------------- */
+function App() {
+  const [active, setActive] = useState("overview");
+  const [txnId, setTxnId] = useState("TXN-10432");
+  const [adjustments, setAdjustments] = useState(initialAdjustments);
+  const [focusAdjId, setFocusAdjId] = useState(initialAdjustments[0].id);
+
+  const openExceptionCount = exceptions.length;
+  const pendingCount = adjustments.filter((a) => a.status === "Pending").length;
+
+  const goTo = (id) => setActive(id);
+  const openTxn = (id) => { setTxnId(id); setActive("detail"); };
+  const proposeAdjustment = (txn) => {
+    const existing = adjustments.find((a) => a.txn === txn);
+    if (existing) { setFocusAdjId(existing.id); setActive("workflow"); return; }
+    setActive("workflow");
+  };
+
+  const moduleTitle = MODULES.find((m) => m.id === active)?.label;
+
+  return (
+    <div style={{ fontFamily: "'IBM Plex Sans', sans-serif", background: C.paper, color: C.text, display: "flex", minHeight: "100vh" }}>
+      <Rail active={active} onSelect={setActive} exceptionCount={openExceptionCount} pendingCount={pendingCount} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ padding: "18px 28px", borderBottom: `1px solid ${C.line}`, background: C.panel, display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+          <div>
+            <div style={{ fontSize: 12, color: C.slateSoft }}>Revenue Control Tower · {PERIOD}</div>
+            <h1 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 21, fontWeight: 600, margin: "2px 0 0" }}>{moduleTitle}</h1>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: C.slate }}>
+            <ClockIcon size={13} /> Last synced 6 minutes ago
+          </div>
+        </div>
+        <div style={{ padding: "24px 28px 40px" }}>
+          {active === "overview" && <Overview goTo={goTo} />}
+          {active === "bridge" && <RevenueBridge goTo={goTo} />}
+          {active === "exceptions" && <Exceptions openTxn={openTxn} />}
+          {active === "detail" && <TransactionDetail txnId={txnId} setTxnId={setTxnId} proposeAdjustment={proposeAdjustment} />}
+          {active === "workflow" && <AdjustmentWorkflow adjustments={adjustments} setAdjustments={setAdjustments} focusId={focusAdjId} setFocusId={setFocusAdjId} />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+</body>
+</html>
